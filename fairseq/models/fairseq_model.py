@@ -34,6 +34,7 @@ class BaseFairseqModel(nn.Module):
     def __init__(self):
         super().__init__()
         self._is_generation_fast = False
+        self.isValid = True;
 
     @classmethod
     def add_args(cls, parser):
@@ -51,6 +52,10 @@ class BaseFairseqModel(nn.Module):
     def get_targets(self, sample, net_output):
         """Get targets from either the sample or the net's output."""
         return sample["target"]
+    def setTrain(self):
+        self.isValid = False
+    def setValid(self):
+        self.isValid = True
 
     def get_normalized_probs(
         self,
@@ -79,8 +84,10 @@ class BaseFairseqModel(nn.Module):
             # (e.g., the classification tutorial)
             logits = net_output.float()
             if log_probs:
+
                 return F.log_softmax(logits, dim=-1)
             else:
+
                 return F.softmax(logits, dim=-1)
         raise NotImplementedError
 
@@ -279,12 +286,15 @@ class FairseqEncoderDecoderModel(BaseFairseqModel):
 
     def __init__(self, encoder, decoder):
         super().__init__()
-
+        self.isValid = True
         self.encoder = encoder
         self.decoder = decoder
         assert isinstance(self.encoder, FairseqEncoder)
         assert isinstance(self.decoder, FairseqDecoder)
-
+    def setTrain(self):
+        self.isValid = False
+    def setValid(self):
+        self.isValid = True
     def forward(self, src_tokens, src_lengths, prev_output_tokens, **kwargs):
         """
         Run the forward pass for an encoder-decoder model.

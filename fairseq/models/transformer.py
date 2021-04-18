@@ -4,10 +4,13 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from random import shuffle
 
+from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
+import numpy as np
+import random
 from fairseq import utils
 from fairseq.models import (
     FairseqEncoder,
@@ -264,7 +267,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
             args,
             tgt_dict,
             embed_tokens,
-            no_encoder_attn=getattr(args, "no_cross_attention", False),
+            no_encoder_attn=getattr(args, "no_cross_attention", False)
         )
 
     # TorchScript doesn't support optional arguments with variable length (**kwargs).
@@ -285,6 +288,12 @@ class TransformerModel(FairseqEncoderDecoderModel):
         Copied from the base class, but without ``**kwargs``,
         which are not supported by TorchScript.
         """
+        if self.isValid == True:
+            self.decoder.setValid()
+            self.encoder.setValid()
+        else:
+            self.encoder.setTrain()
+            self.decoder.setTrain()
         encoder_out = self.encoder(
             src_tokens, src_lengths=src_lengths, return_all_hiddens=return_all_hiddens
         )
@@ -297,6 +306,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
         )
+
         return decoder_out
 
     # Since get_normalized_probs is in the Fairseq Model which is not scriptable,
@@ -311,6 +321,44 @@ class TransformerModel(FairseqEncoderDecoderModel):
     ):
         """Get normalized probabilities (or log probs) from a net's output."""
         return self.get_normalized_probs_scriptable(net_output, log_probs, sample)
+    def get_targets(self, sample, net_output):
+
+        if self.isValid == True:
+
+            encoder_out = net_output[1]["encoder_out"]
+            pair_list = encoder_out["crossList"]
+            src_tokens = sample["target"].clone().detach()
+            pair_list = encoder_out["crossList"]
+            block = encoder_out["block"]
+            ratio = encoder_out["ratio"]
+
+            new_src_tokens = torch.zeros(src_tokens.shape,dtype=torch.int,device='cuda')
+            for i, pair in enumerate(pair_list):
+                new_src_tokens[i] = self.make_first_place(src_tokens[pair[0]], block, ratio) + \
+                           self.make_second_place(src_tokens[pair[1]], block, ratio)
+
+
+            # new_src_tokens = new_src_tokens[:round(new_src_tokens.shape[0]/2),:]
+
+            sample["target"] = torch.cat((src_tokens,new_src_tokens),0)
+
+        return sample["target"]
+
+    def make_first_place(self, vec, block, ratio):
+        res = vec.clone()
+        idx = 0
+        while idx + ratio * block < len(vec):
+            res[idx + ratio * block:idx + ratio * block + block] = 0
+            idx = idx + ratio * block + block
+        return res
+
+    def make_second_place(self, vec, block, ratio):
+        res = vec.clone()
+        idx = 0
+        while idx < len(vec):
+            res[idx:idx + ratio * block] = 0
+            idx = idx + ratio * block + block
+        return res
 
 
 class TransformerEncoder(FairseqEncoder):
@@ -326,6 +374,7 @@ class TransformerEncoder(FairseqEncoder):
 
     def __init__(self, args, dictionary, embed_tokens):
         self.args = args
+        self.isValid = False
         super().__init__(dictionary)
         self.register_buffer("version", torch.Tensor([3]))
 
@@ -380,7 +429,10 @@ class TransformerEncoder(FairseqEncoder):
             self.layer_norm = LayerNorm(embed_dim)
         else:
             self.layer_norm = None
-
+    def setValid(self):
+        self.isValid = True
+    def setTrain(self):
+        self.isValid = False
     def build_encoder_layer(self, args):
         layer = TransformerEncoderLayer(args)
         if getattr(args, "checkpoint_activations", False):
@@ -391,7 +443,9 @@ class TransformerEncoder(FairseqEncoder):
     def forward_embedding(
         self, src_tokens, token_embedding: Optional[torch.Tensor] = None
     ):
+
         # embed tokens and positions
+
         if token_embedding is None:
             token_embedding = self.embed_tokens(src_tokens)
         x = embed = self.embed_scale * token_embedding
@@ -402,6 +456,7 @@ class TransformerEncoder(FairseqEncoder):
         x = self.dropout_module(x)
         if self.quant_noise is not None:
             x = self.quant_noise(x)
+
         return x, embed
 
     def forward(
@@ -437,6 +492,46 @@ class TransformerEncoder(FairseqEncoder):
         # compute padding mask
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
         has_pads = (src_tokens.device.type == "xla" or encoder_padding_mask.any())
+        pair_list = []
+        ratio = 0
+        block = 0
+
+        if self.isValid == True:
+            sentence_index = list(range(src_tokens.shape[0]))
+            index_set = set(sentence_index)
+            generate_pairs = src_tokens.shape[0]
+            i = 0
+            pair_set = set()
+            # pair_set是暂时用来查重的，取值还是用pair_list可以保留顺序
+            while i < generate_pairs:
+                pair = random.sample(sentence_index, 2)
+                pair_tuple = (pair[0], pair[1])
+                if pair_tuple not in pair_set:
+                    pair_set.add(pair_tuple)
+                    pair_list.append(pair)
+                    i = i + 1
+            ratio = random.betavariate(0.5,0.5)
+            # block = 3
+            a = ratio
+            b = 1-ratio
+            ratio = round(a/b)
+            if ratio == 0:
+                ratio = round((b/a))
+            # ratio = 2
+            new_src_tokens = torch.zeros(src_tokens.shape,dtype=torch.int,device='cuda')
+            for i, pair in enumerate(pair_list):
+                new_src_tokens[i] = self.make_first_place(src_tokens[pair[0]], block, ratio) + \
+                           self.make_second_place(src_tokens[pair[1]], block, ratio)
+
+
+
+            # new_src_tokens = new_src_tokens[:round(new_src_tokens.shape[0]/2),:]
+            src_tokens = torch.cat((src_tokens,new_src_tokens),0)
+                # print("new src tokens ", new_src_tokens)
+                # print("src tokens ", src_tokens)
+            # extra = encoder_padding_mask[:round(encoder_padding_mask.shape[0]/2),:].clone().detach()
+            encoder_padding_mask = torch.cat((encoder_padding_mask,encoder_padding_mask),0)
+
 
         x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
 
@@ -444,10 +539,8 @@ class TransformerEncoder(FairseqEncoder):
         if encoder_padding_mask is not None:
             x = x * (1 - encoder_padding_mask.unsqueeze(-1).type_as(x))
 
-        # B x T x C -> T x B x C
-        x = x.transpose(0, 1)
-
         encoder_states = []
+        x = x.transpose(0, 1)
 
         if return_all_hiddens:
             encoder_states.append(x)
@@ -464,6 +557,7 @@ class TransformerEncoder(FairseqEncoder):
         if self.layer_norm is not None:
             x = self.layer_norm(x)
 
+
         # The Pytorch Mobile lite interpreter does not supports returning NamedTuple in
         # `forward` so we use a dictionary instead.
         # TorchScript does not support mixed values so the values are all lists.
@@ -475,7 +569,26 @@ class TransformerEncoder(FairseqEncoder):
             "encoder_states": encoder_states,  # List[T x B x C]
             "src_tokens": [],
             "src_lengths": [],
+            "crossList": pair_list,
+            "ratio":ratio,
+            "block":block
         }
+
+    def make_first_place(self, vec, block, ratio):
+        res = vec.clone()
+        idx = 0
+        while idx + ratio * block < len(vec):
+            res[idx + ratio * block:idx + ratio * block + block] = 0
+            idx = idx + ratio * block + block
+        return res
+
+    def make_second_place(self, vec, block, ratio):
+        res = vec.clone()
+        idx = 0
+        while idx < len(vec):
+            res[idx:idx + ratio * block] = 0
+            idx = idx + ratio * block + block
+        return res
 
     @torch.jit.export
     def reorder_encoder_out(self, encoder_out: Dict[str, List[Tensor]], new_order):
@@ -516,10 +629,17 @@ class TransformerEncoder(FairseqEncoder):
         else:
             src_lengths = [(encoder_out["src_lengths"][0]).index_select(0, new_order)]
 
+        if len(encoder_out["crossList"]) == 0:
+            crossList = []
+        else:
+            crossList = (encoder_out["crossList"])
         encoder_states = encoder_out["encoder_states"]
+        ratio = encoder_out["ratio"]
+        block = encoder_out["block"]
         if len(encoder_states) > 0:
             for idx, state in enumerate(encoder_states):
                 encoder_states[idx] = state.index_select(1, new_order)
+
 
         return {
             "encoder_out": new_encoder_out,  # T x B x C
@@ -528,6 +648,9 @@ class TransformerEncoder(FairseqEncoder):
             "encoder_states": encoder_states,  # List[T x B x C]
             "src_tokens": src_tokens,  # B x T
             "src_lengths": src_lengths,  # B x 1
+            "crossList": crossList,
+            "ratio":ratio,
+            "block":block
         }
 
     def max_positions(self):
@@ -575,6 +698,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
     """
 
     def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False):
+        self.isValid = False
         self.args = args
         super().__init__(dictionary)
         self.register_buffer("version", torch.Tensor([3]))
@@ -681,13 +805,32 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             nn.init.normal_(
                 self.output_projection.weight, mean=0, std=self.output_embed_dim ** -0.5
             )
-
+    def setValid(self):
+        self.isValid = True
+    def setTrain(self):
+        self.isValid = False
     def build_decoder_layer(self, args, no_encoder_attn=False):
         layer = TransformerDecoderLayer(args, no_encoder_attn)
         if getattr(args, "checkpoint_activations", False):
             offload_to_cpu = getattr(args, "offload_activations", False)
             layer = checkpoint_wrapper(layer, offload_to_cpu=offload_to_cpu)
         return layer
+
+    def make_first_place(self, vec, block, ratio):
+        res = vec.clone()
+        idx = 0
+        while idx + ratio * block < len(vec):
+            res[idx + ratio * block:idx + ratio * block + block] = 0
+            idx = idx + ratio * block + block
+        return res
+
+    def make_second_place(self, vec, block, ratio):
+        res = vec.clone()
+        idx = 0
+        while idx < len(vec):
+            res[idx:idx + ratio * block] = 0
+            idx = idx + ratio * block + block
+        return res
 
     def forward(
         self,
@@ -700,6 +843,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         alignment_heads: Optional[int] = None,
         src_lengths: Optional[Any] = None,
         return_all_hiddens: bool = False,
+
     ):
         """
         Args:
@@ -719,6 +863,22 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 - the decoder's output of shape `(batch, tgt_len, vocab)`
                 - a dictionary with any model-specific outputs
         """
+        if self.isValid == True:
+            pair_list = encoder_out["crossList"]
+            block = encoder_out["block"]
+            ratio = encoder_out["ratio"]
+
+            new_src_tokens = torch.zeros(prev_output_tokens.shape,dtype=torch.int,device='cuda')
+            for i, pair in enumerate(pair_list):
+                new_src_tokens[i] = self.make_first_place(prev_output_tokens[pair[0]], block, ratio) + \
+                           self.make_second_place(prev_output_tokens[pair[1]], block, ratio)
+
+
+
+            # new_src_tokens = new_src_tokens[:round(new_src_tokens.shape[0]/2),:]
+
+            prev_output_tokens = torch.cat((prev_output_tokens,new_src_tokens),0)
+
         x, extra = self.extract_features(
             prev_output_tokens,
             encoder_out=encoder_out,
@@ -727,6 +887,23 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
         )
+
+        #first half of the sentences are now set to 0, we want to change it with cross-embedding
+        #then we will generate new embedding that is mixed by the first half and the second half of the batch
+        #
+        # for i in range(x.shape[0]):
+        #     for j in range(x.shape[1]):
+        #         for k in range (x.shape[2]):
+        #             if i<div:
+        #                 x_tmp[i][j][k] = x[i][j][k]
+        #             else:
+        #                 if (k % 2) != 0:
+        #                     x_tmp[i][j][k] = x[i][j][k]
+        #                 else:
+        #                     x_tmp[i][j][k] = x[round(i/2)][round(j/2)][round(k/2)]
+        #
+        # print("here")
+
         if not features_only:
             x = self.output_layer(x)
         return x, extra
@@ -799,7 +976,6 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
-
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(prev_output_tokens)
 
@@ -817,14 +993,14 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         x = self.dropout_module(x)
 
+
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
         self_attn_padding_mask: Optional[Tensor] = None
         if self.cross_self_attention or prev_output_tokens.eq(self.padding_idx).any():
             self_attn_padding_mask = prev_output_tokens.eq(self.padding_idx)
-
-        # decoder layers
+            # decoder layers
         attn: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
         for idx, layer in enumerate(self.layers):
@@ -832,7 +1008,6 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 self_attn_mask = self.buffered_future_mask(x)
             else:
                 self_attn_mask = None
-
             x, layer_attn, _ = layer(
                 x,
                 encoder_out["encoder_out"][0]
@@ -865,12 +1040,13 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             x = self.layer_norm(x)
 
         # T x B x C -> B x T x C
-        x = x.transpose(0, 1)
 
+        x = x.transpose(0, 1)
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
-
-        return x, {"attn": [attn], "inner_states": inner_states}
+        return x, {"attn": [attn], "inner_states": inner_states, "decoder": self, "encoder_out": encoder_out, "prev_output_tokens": prev_output_tokens,
+                   "incremental_state":incremental_state, "full_context_alignment": full_context_alignment, "alignment_layer": alignment_layer, "alignment_heads": alignment_heads,
+                   "decoder_output": x}
 
     def output_layer(self, features):
         """Project features to the vocabulary size."""

@@ -84,6 +84,7 @@ class LabelSmoothedCrossEntropyR3FCriterion(FairseqCriterion):
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
         )
 
+
         if model.training:
             noise = self.noise_sampler.sample(sample_shape=token_embeddings.shape).to(
                 token_embeddings

@@ -470,7 +470,10 @@ class FairseqTask(object):
                 - logging outputs to display while training
         """
         model.train()
+
         model.set_num_updates(update_num)
+        model.setTrain();
+
         with torch.autograd.profiler.record_function("forward"):
             loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
@@ -481,6 +484,7 @@ class FairseqTask(object):
 
     def valid_step(self, sample, model, criterion):
         model.eval()
+        model.setValid()
         with torch.no_grad():
             loss, sample_size, logging_output = criterion(model, sample)
         return loss, sample_size, logging_output
@@ -496,6 +500,7 @@ class FairseqTask(object):
     def inference_step(
         self, generator, models, sample, prefix_tokens=None, constraints=None
     ):
+
         with torch.no_grad():
             return generator.generate(
                 models, sample, prefix_tokens=prefix_tokens, constraints=constraints

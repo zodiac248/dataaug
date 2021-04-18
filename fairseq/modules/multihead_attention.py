@@ -145,8 +145,8 @@ class MultiheadAttention(nn.Module):
             need_weights = True
 
         is_tpu = query.device.type == "xla"
-
         tgt_len, bsz, embed_dim = query.size()
+
         assert embed_dim == self.embed_dim
         assert list(query.size()) == [tgt_len, bsz, embed_dim]
 
@@ -183,7 +183,6 @@ class MultiheadAttention(nn.Module):
                 k_proj_weight=self.k_proj.weight,
                 v_proj_weight=self.v_proj.weight,
             )
-
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
             if saved_state is not None and "prev_key" in saved_state:
@@ -238,6 +237,7 @@ class MultiheadAttention(nn.Module):
             .view(tgt_len, bsz * self.num_heads, self.head_dim)
             .transpose(0, 1)
         )
+
         if k is not None:
             k = (
                 k.contiguous()
@@ -283,6 +283,7 @@ class MultiheadAttention(nn.Module):
                 static_kv=static_kv,
             )
 
+
             saved_state["prev_key"] = k.view(bsz, self.num_heads, -1, self.head_dim)
             saved_state["prev_value"] = v.view(bsz, self.num_heads, -1, self.head_dim)
             saved_state["prev_key_padding_mask"] = key_padding_mask
@@ -298,6 +299,7 @@ class MultiheadAttention(nn.Module):
             key_padding_mask = None
 
         if key_padding_mask is not None:
+
             assert key_padding_mask.size(0) == bsz
             assert key_padding_mask.size(1) == src_len
 

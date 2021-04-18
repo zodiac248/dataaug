@@ -34,7 +34,14 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
+
+    generate_part = nll_loss[round(nll_loss.shape[0]//2):,:]
+    generate_part = generate_part*0.5
+    nll_loss[round(nll_loss.shape[0]//2):,:] = generate_part
+
     smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+
+    # smooth_loss = torch.cat((original_smooth_loss,generate_smooth_loss),0)
     if ignore_index is not None:
         pad_mask = target.eq(ignore_index)
         nll_loss.masked_fill_(pad_mask, 0.0)
@@ -55,12 +62,12 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
 )
 class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
     def __init__(
-        self,
-        task,
-        sentence_avg,
-        label_smoothing,
-        ignore_prefix_size=0,
-        report_accuracy=False,
+            self,
+            task,
+            sentence_avg,
+            label_smoothing,
+            ignore_prefix_size=0,
+            report_accuracy=False,
     ):
         super().__init__(task)
         self.sentence_avg = sentence_avg
@@ -70,13 +77,16 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
-
         Returns a tuple with three elements:
         1) the loss
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
+        print("before criterion ", model.isValid)
+
         net_output = model(**sample["net_input"])
+        print("after criterion ", model.isValid)
+
         loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -99,11 +109,11 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         target = model.get_targets(sample, net_output)
         if self.ignore_prefix_size > 0:
             if getattr(lprobs, "batch_first", False):
-                lprobs = lprobs[:, self.ignore_prefix_size :, :].contiguous()
-                target = target[:, self.ignore_prefix_size :].contiguous()
+                lprobs = lprobs[:, self.ignore_prefix_size:, :].contiguous()
+                target = target[:, self.ignore_prefix_size:].contiguous()
             else:
-                lprobs = lprobs[self.ignore_prefix_size :, :, :].contiguous()
-                target = target[self.ignore_prefix_size :, :].contiguous()
+                lprobs = lprobs[self.ignore_prefix_size:, :, :].contiguous()
+                target = target[self.ignore_prefix_size:, :].contiguous()
         return lprobs.view(-1, lprobs.size(-1)), target.view(-1)
 
     def compute_loss(self, model, net_output, sample, reduce=True):

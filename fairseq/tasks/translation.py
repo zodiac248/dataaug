@@ -67,7 +67,6 @@ def load_langpair_dataset(
 
     for k in itertools.count():
         split_k = split + (str(k) if k > 0 else "")
-
         # infer langcode
         if split_exists(split_k, src, tgt, src, data_path):
             prefix = os.path.join(data_path, "{}.{}-{}.".format(split_k, src, tgt))
@@ -328,6 +327,7 @@ class TranslationTask(FairseqTask):
             paths = paths[:1]
         data_path = paths[(epoch - 1) % len(paths)]
 
+
         # infer langcode
         src, tgt = self.cfg.source_lang, self.cfg.target_lang
 
@@ -351,6 +351,9 @@ class TranslationTask(FairseqTask):
             shuffle=(split != "test"),
             pad_to_multiple=self.cfg.required_seq_len_multiple,
         )
+        print("------------------------------kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk----------------------------------")
+        print(data_path)
+        print(split)
 
     def build_dataset_for_inference(self, src_tokens, src_lengths, constraints=None):
         return LanguagePairDataset(
@@ -376,6 +379,8 @@ class TranslationTask(FairseqTask):
         return model
 
     def valid_step(self, sample, model, criterion):
+        model.setValid()
+        print("inside validation ", model.isValid)
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         if self.cfg.eval_bleu:
             bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
